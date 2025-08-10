@@ -1,9 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Thu Mar 15 09:32:04 2018
 
-@author: Ken Huang
-"""
 from docplex.mp.model import Model
 from itertools import product
 import numpy as np
@@ -14,10 +9,8 @@ import tkinter as tk
 from tkinter import scrolledtext
 
 class MMT:
-    '''a Model class that solves the multi-model transportation optimization problem.'''
 
     def __init__(self, framework='DOCPLEX'):
-        # parameters
         self.portSpace = None
         self.dateSpace = None
         self.goods = None
@@ -40,14 +33,14 @@ class MMT:
         self.transitDuty = None
         self.route_num = None
         self.available_routes = None
-        # decision variables
+    
         self.var = None
         self.x = None
         self.var_2 = None
         self.y = None
         self.var_3 = None
         self.z = None
-        # result & solution
+        
         self.xs = None
         self.ys = None
         self.zs = None
@@ -57,7 +50,6 @@ class MMT:
         self.solution_ = None
         self.arrTime_ = None
         self.objective_value = None
-        # helping variables
         self.var_location = None
         self.var_2_location = None
         self.var_3_location = None
@@ -68,7 +60,6 @@ class MMT:
             self.framework = framework
 
     def set_param(self, route, order):
-        '''set model parameters based on the read-in route and order information.'''
 
         bigM = 100000
         route = route[route['Feasibility'] == 1]
@@ -110,7 +101,6 @@ class MMT:
         self.transitDuty = np.ones([self.portSpace, self.portSpace]) * bigM
         self.transitDuty[source, destination] = route['Transit Duty']
 
-        # make the container size of infeasible routes to be small enough, similar to bigM
         self.ctnVol = np.ones([self.portSpace, self.portSpace]) * 0.1
         self.ctnVol[source, destination] = route['Container Size']
         self.ctnVol = self.ctnVol.reshape(self.portSpace, self.portSpace, 1)
@@ -125,11 +115,9 @@ class MMT:
         self.kStartTime = np.array((order['Order Date'] - self.minDate).dt.days)
         self.taxPct = np.array(order['Tax Percentage'])
 
-        # add available route indexes
         self.route_num = route[['Source', 'Destination']].drop_duplicates().shape[0]
         routes = route[['Source', 'Destination']].drop_duplicates().replace(self.indexPort)
         self.available_routes = list(zip(routes['Source'], routes['Destination']))
-        # localization variables of decision variables in the matrix
         var_location = product(self.available_routes, range(self.dateSpace), range(self.goods))
         var_location = [(i[0][0], i[0][1], i[1], i[2]) for i in var_location]
         self.var_location = tuple(zip(*var_location))
@@ -141,16 +129,13 @@ class MMT:
         self.var_3_location = self.var_2_location
 
     def build_model(self):
-        '''overall function to build up model objective and constraints'''
         if self.framework == 'CVXPY':
             self.cvxpy_build_model()
         elif self.framework == 'DOCPLEX':
             self.cplex_build_model()
 
     def cvxpy_build_model(self):
-        '''build up the mathematical programming model's objective and constraints using CVXPY framework.'''
 
-        # 4 dimensional binary decision variable matrix
         self.var = cp.Variable(self.route_num * self.dateSpace * self.goods, boolean=True, name='x')
         self.x = np.zeros((self.portSpace, self.portSpace, self.dateSpace, self.goods)).astype('object')
         self.x[self.var_location] = list(self.var)
@@ -162,42 +147,42 @@ class MMT:
         self.var_3 = cp.Variable(self.route_num * self.dateSpace, boolean=True, name='z')
         self.z = np.zeros((self.portSpace, self.portSpace, self.dateSpace)).astype('object')
         self.z[self.var_3_location] = list(self.var_3)
-        # warehouse related cost
+       
         warehouseCost, arrTime, stayTime = self.warehouse_fee(self.x)
-        ###objective###
+
         transportCost = np.sum(self.y * self.tranCost) + np.sum(self.z * self.tranFixedCost)
         transitDutyCost = np.sum(np.sum(np.dot(self.x, self.kValue), axis=2) * self.transitDuty)
         taxCost = np.sum(self.taxPct * self.kValue) + transitDutyCost
         objective = cp.Minimize(transportCost + warehouseCost + taxCost)
-        ###constraint###
+       
         constraints = []
-        # 1.Goods must be shipped out from its origin to another node and shipped to its destination.
+       
         constraints += [np.sum(self.x[self.kStartPort[k], :, :, k]) == 1 for k in range(self.goods)]
         constraints += [np.sum(self.x[:, self.kEndPort[k], :, k]) == 1 for k in range(self.goods)]
-        # 2.For each goods k, it couldn't be shipped out from its destination or shipped to its origin.
+       
         constraints += [np.sum(self.x[:, self.kStartPort[k], :, k]) == 0 for k in range(self.goods)]
         constraints += [np.sum(self.x[self.kEndPort[k], :, :, k]) == 0 for k in range(self.goods)]
-        # 3.constraint for transition point
+       
         for k in range(self.goods):
             for j in range(self.portSpace):
                 if (j != self.kStartPort[k]) & (j != self.kEndPort[k]):
                     constraints.append(np.sum(self.x[:, j, :, k]) == np.sum(self.x[j, :, :, k]))
-        # 4.each goods can only be transitioned in or out of a port for at most once
+        
         constraints += [np.sum(self.x[i, :, :, k]) <= 1 for k in range(self.goods) for i in range(self.portSpace)]
         constraints += [np.sum(self.x[:, j, :, k]) <= 1 for k in range(self.goods) for j in range(self.portSpace)]
-        # 5.transition-out should be after transition-in
+       
         constraints += [stayTime[j, k] >= 0 for j in range(self.portSpace) for k in range(self.goods)]
-        # 6.constraint for number of containers used
+      
         numCtn = np.dot(self.x, self.kVol) / self.ctnVol
         constraints += [self.y[i, j, t] - numCtn[i, j, t] >= 0 \
                         for i in range(self.portSpace) for j in range(self.portSpace) for t in
                         range(self.dateSpace) if not isinstance(self.y[i, j, t] - numCtn[i, j, t] >= 0, bool)]
-        # 7. constraint to check whether a route is used
+       
         constraints += [self.z[i, j, t] >= (np.sum(self.x[i, j, t, :]) * 10e-5) \
                         for i in range(self.portSpace) for j in range(self.portSpace) for t in
                         range(self.dateSpace) if
                         not isinstance(self.z[i, j, t] >= (np.sum(self.x[i, j, t, :]) * 10e-5), bool)]
-        # 8.time limitation constraint for each goods
+       
         constraints += [np.sum(arrTime[:, self.kEndPort[k], :, k]) <= self.kDDL[k] for k in range(self.goods)
                         if not isinstance(np.sum(arrTime[:, self.kEndPort[k], :, k]) <= self.kDDL[k], bool)]
         model = cp.Problem(objective, constraints)
@@ -209,53 +194,52 @@ class MMT:
     def cplex_build_model(self):
         '''build up the mathematical programming model's objective and constraints using DOCPLEX framework.'''
         model = Model()
-        # 4 dimensional binary decision variable matrix
+
         self.var = model.binary_var_list(self.route_num * self.dateSpace * self.goods, name='x')
         self.x = np.zeros((self.portSpace, self.portSpace, self.dateSpace, self.goods)).astype('object')
         self.x[self.var_location] = self.var
-        # 3 dimensional container number matrix
+       
         self.var_2 = model.integer_var_list(self.route_num * self.dateSpace, name='y')
         self.y = np.zeros((self.portSpace, self.portSpace, self.dateSpace)).astype('object')
         self.y[self.var_2_location] = self.var_2
-        # 3 dimensional route usage matrix
+        
         self.var_3 = model.binary_var_list(self.route_num * self.dateSpace, name='z')
         self.z = np.zeros((self.portSpace, self.portSpace, self.dateSpace)).astype('object')
         self.z[self.var_3_location] = self.var_3
-        # warehouse related cost
+       
         warehouseCost, arrTime, stayTime = self.warehouse_fee(self.x)
-        ###objective###
+        
         transportCost = np.sum(self.y * self.tranCost) + np.sum(self.z * self.tranFixedCost)
         transitDutyCost = np.sum(np.sum(np.dot(self.x, self.kValue), axis=2) * self.transitDuty)
         taxCost = np.sum(self.taxPct * self.kValue) + transitDutyCost
         model.minimize(transportCost + warehouseCost + taxCost)
-        ###constraint###
-        # 1.Goods must be shipped out from its origin to another node and shipped to its destination.
+       
         model.add_constraints(np.sum(self.x[self.kStartPort[k], :, :, k]) == 1 for k in range(self.goods))
         model.add_constraints(np.sum(self.x[:, self.kEndPort[k], :, k]) == 1 for k in range(self.goods))
-        # 2.For each goods k, it couldn't be shipped out from its destination or shipped to its origin.
+       
         model.add_constraints(np.sum(self.x[:, self.kStartPort[k], :, k]) == 0 for k in range(self.goods))
         model.add_constraints(np.sum(self.x[self.kEndPort[k], :, :, k]) == 0 for k in range(self.goods))
-        # 3.constraint for transition point
+        
         for k in range(self.goods):
             for j in range(self.portSpace):
                 if (j != self.kStartPort[k]) & (j != self.kEndPort[k]):
                     model.add_constraint(np.sum(self.x[:, j, :, k]) == np.sum(self.x[j, :, :, k]))
-        # 4.each goods can only be transitioned in or out of a port for at most once
+        
         model.add_constraints(np.sum(self.x[i, :, :, k]) <= 1 for k in range(self.goods) for i in range(self.portSpace))
         model.add_constraints(np.sum(self.x[:, j, :, k]) <= 1 for k in range(self.goods) for j in range(self.portSpace))
-        # 5.transition-out should be after transition-in
+       
         model.add_constraints(stayTime[j, k] >= 0 for j in range(self.portSpace) for k in range(self.goods))
-        # 6.constraint for number of containers used
+        
         numCtn = np.dot(self.x, self.kVol) / self.ctnVol
         model.add_constraints(self.y[i, j, t] - numCtn[i, j, t] >= 0 \
                               for i in range(self.portSpace) for j in range(self.portSpace) for t in
                               range(self.dateSpace) if not isinstance(self.y[i, j, t] - numCtn[i, j, t] >= 0, bool))
-        # 7. constraint to check whether a route is used
+       
         model.add_constraints(self.z[i, j, t] >= (np.sum(self.x[i, j, t, :]) * 10e-5) \
                               for i in range(self.portSpace) for j in range(self.portSpace) for t in
                               range(self.dateSpace) if
                               not isinstance(self.z[i, j, t] >= (np.sum(self.x[i, j, t, :]) * 10e-5), bool))
-        # 8.time limitation constraint for each goods
+       
         model.add_constraints(np.sum(arrTime[:, self.kEndPort[k], :, k]) <= self.kDDL[k] for k in range(self.goods)
                               if not isinstance(np.sum(arrTime[:, self.kEndPort[k], :, k]) <= self.kDDL[k], bool))
 
@@ -264,12 +248,7 @@ class MMT:
         self.model = model
 
     def solve_model(self, solver=cp.CBC):
-        '''
-        solve the optimization model & cache the optimized objective value, route and arrival time for each goods.
-        :param solver: the solver to use to solve the LP problem when framework is CVXPY, has no effect to the model
-        when framework is DOCPLEX. Default solver is cvxpy.CBC, other open source solvers do not perform that well.
-        :return: None
-        '''
+       
         try:
             if self.framework == 'CVXPY':
                 self.objective_value = self.model.solve(solver)
@@ -312,13 +291,12 @@ class MMT:
                 (np.sum(arrTime[:, self.kEndPort[i], :, i]), unit='days')).date().isoformat()
 
     def get_output_(self):
-        '''After the model is solved, return total cost, final solution and arrival
-        time for each of the goods'''
+       
 
         return self.objective_value, self.solution_, self.arrTime_
 
     def warehouse_fee(self, x):
-        '''return warehouse fee, arrival time and stay time for each port.'''
+      
 
         startTime = np.arange(self.dateSpace).reshape(1, 1, self.dateSpace, 1) * x
         arrTimeMtrx = startTime + self.tranTime.reshape(self.portSpace, \
@@ -332,7 +310,7 @@ class MMT:
         return warehouseCost, arrTime, stayTime
 
     def txt_solution(self, route, order):
-        '''transform the cached results to text.'''
+        
 
         travelMode = dict(zip(zip(route['Source'], route['Destination']), route['Travel Mode']))
         txt = "Solution"
@@ -364,8 +342,6 @@ class MMT:
 
 
 def transform(filePath):
-    '''Read in order and route data, transform the data into a form that can
-    be processed by the operation research model.'''
     order = pd.read_excel(filePath, sheet_name='Order Information')
     route = pd.read_excel(filePath, sheet_name='Route Information')
     order['Tax Percentage'][order['Journey Type'] == 'Domestic'] = 0
@@ -397,7 +373,6 @@ def show_output_in_window(output_text):
 
     window.mainloop()
 
-# === Main execution ===
 if __name__ == '__main__':
     order, route = transform("model data.xlsx")
     m = MMT(framework='CVXPY')  # or MMT()
@@ -406,5 +381,4 @@ if __name__ == '__main__':
     m.solve_model()
     txt = m.txt_solution(route, order)
     
-    # Show output in window instead of writing to file
     show_output_in_window(txt)
