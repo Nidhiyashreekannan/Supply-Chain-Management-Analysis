@@ -1,4 +1,3 @@
-
 from docplex.mp.model import Model
 from itertools import product
 import numpy as np
